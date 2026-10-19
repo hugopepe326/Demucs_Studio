@@ -1,0 +1,96 @@
+name: Compilar instalador de Windows
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Tag del release donde adjuntar el .exe (vacío = solo artifact)"
+        required: false
+        default: ""
+      target_repo:
+        description: "Repositorio del release (owner/repo)"
+        required: false
+        default: "hugopepe326/demucs"
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      INSTALLER_NAME: "Demucs_Studio 1.0.0.exe"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: requirements-build.txt
+
+      - name: Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-build.txt
+
+      - name: Comprobar el núcleo
+        run: python -m pytest -q
+
+      - name: Descargar ffmpeg y uv
+        shell: pwsh
+        run: ./scripts/fetch-tools.ps1
+
+      - name: Empaquetar la aplicación
+        run: pyinstaller packaging/demucs-studio.spec --noconfirm --clean
+
+      - name: Instalar Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Generar el instalador
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { $iscc = "$env:ProgramFiles\Inno Setup 6\ISCC.exe" }
+          if (-not (Test-Path $iscc)) { throw "No se encontró Inno Setup 6" }
+          & $iscc "packaging\installer.iss"
+
+      - name: Calcular SHA-256
+        shell: pwsh
+        run: |
+          Get-ChildItem "dist/installer/*.exe" | ForEach-Object {
+            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash
+            "$hash  $($_.Name)" | Out-File -Encoding ascii (Join-Path $_.DirectoryName "SHA256SUMS.txt")
+          }
+          Get-Content "dist/installer/SHA256SUMS.txt"
+
+      - name: Subir artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: demucs-studio-windows
+          path: dist/installer/*
+          if-no-files-found: error
+
+      - name: Adjuntar al release
+        if: ${{ inputs.release_tag != '' }}
+        shell: pwsh
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_REPO_TOKEN || github.token }}
+        run: |
+          $tag = "${{ inputs.release_tag }}"
+          $repo = "${{ inputs.target_repo }}"
+          gh release upload $tag "dist/installer/$env:INSTALLER_NAME" "dist/installer/SHA256SUMS.txt" --repo $repo --clobber
+
+      - name: Resumen
+        if: always()
+        shell: pwsh
+        run: |
+          $line = "Instalador generado y subido como artifact «demucs-studio-windows»."
+          if ("${{ inputs.release_tag }}" -ne "") {
+            $line += " Si el repositorio de destino lo permite, se adjuntó al release «${{ inputs.release_tag }}»."
+          }
+          $line >> $env:GITHUB_STEP_SUMMARY
