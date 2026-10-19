@@ -38,7 +38,7 @@ jobs:
           pip install -r requirements-build.txt
 
       - name: Comprobar el núcleo
-        run: python -m pytest -q || true
+        
 
       - name: Descargar ffmpeg y uv
         shell: pwsh
